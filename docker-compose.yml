@@ -7,7 +7,7 @@ services:
     command: redis-server --save "" --appendonly no
     networks:
       - mongo-net
-
+ 
   cassandra-seed:
     image: cassandra:4.1
     container_name: mathews-cassandra-seed
@@ -31,7 +31,7 @@ services:
       retries: 10
     networks:
       - mongo-net
-
+ 
   cassandra-node2:
     image: cassandra:4.1
     container_name: mathews-cassandra-node2
@@ -58,7 +58,7 @@ services:
       retries: 10
     networks:
       - mongo-net
-
+ 
   cassandra-node3:
     image: cassandra:4.1
     container_name: mathews-cassandra-node3
@@ -85,7 +85,7 @@ services:
       retries: 10
     networks:
       - mongo-net
-
+ 
   configsvr1:
     image: mongo:latest
     container_name: configsvr1
@@ -105,7 +105,7 @@ services:
       - "27019:27017"
     networks:
       - mongo-net
-
+ 
   shard1-primary:
     image: mongo:latest
     container_name: shard1-primary
@@ -125,7 +125,7 @@ services:
       - "27018:27017"
     networks:
       - mongo-net
-
+ 
   shard1-secondary:
     image: mongo:latest
     container_name: shard1-secondary
@@ -143,7 +143,7 @@ services:
       - shard1_secondary_data:/data/db
     networks:
       - mongo-net
-
+ 
   shard1-arbiter:
     image: mongo:latest
     container_name: shard1-arbiter
@@ -161,7 +161,7 @@ services:
       - shard1_arbiter_data:/data/arb
     networks:
       - mongo-net
-
+ 
   mongos:
     image: mongo:latest
     container_name: mongos
@@ -183,7 +183,7 @@ services:
       - shard1-primary
       - shard1-secondary
       - shard1-arbiter
-
+ 
   mongo-init:
     image: mongo:latest
     container_name: mongo-init
@@ -196,7 +196,7 @@ services:
       bash -c "
         echo 'Esperando que los nodos estén listos...' &&
         sleep 15 &&
-
+ 
         echo '1/3 Inicializando Config Server RS...' &&
         mongosh --host configsvr1 --port 27017 --eval '
           rs.initiate({
@@ -206,7 +206,7 @@ services:
           })
         ' &&
         sleep 5 &&
-
+ 
         echo '2/3 Inicializando Shard 1 RS (primary + secondary + arbiter)...' &&
         mongosh --host shard1-primary --port 27017 --eval '
           rs.initiate({
@@ -219,7 +219,7 @@ services:
           })
         ' &&
         sleep 15 &&
-
+ 
         echo '3/3 Registrando shard y habilitando sharding en mathews_coffee_delivery...' &&
         mongosh --host mongos --port 27017 --eval '
           db.adminCommand({ setDefaultRWConcern: 1, defaultWriteConcern: { w: 1 } });
@@ -227,10 +227,10 @@ services:
           sh.enableSharding(\"mathews_coffee_delivery\");
           sh.shardCollection(\"mathews_coffee_delivery.orders\", { region: 1 });
         ' &&
-
+ 
         echo 'Cluster inicializado correctamente.'
       "
-
+ 
   mongo-backup:
     image: weseek/mongodb-awesome-backup:latest
     container_name: mongo_backup
@@ -238,7 +238,7 @@ services:
     environment:
       - MONGODB_HOST=mongos
       - MONGODB_PORT=27017
-      - TARGET_BUCKET_URL=gs://mathews-coffee-bucket/
+      - TARGET_BUCKET_URL=gs://backups_cassandra/
       - GCP_SERVICE_ACCOUNT_KEY_JSON_PATH=/keys/gcp-key.json
       - GCP_PROJECT_ID=mathews-coffe
       - BACKUPFILE_PREFIX=backup-proyecto
@@ -251,36 +251,44 @@ services:
       - mongo-net
     depends_on:
       - mongos
-
-  # INTEGRADO: CONTENEDOR DE TERCEROS PARA BACKUPS DE CASSANDRA HACIA GCS
+ 
+ 
+  # CORREGIDO: BACKUPS DE CASSANDRA PARA GCS
+ 
   cassandra-backup:
-    image: offen/docker-volume-backup:v2
+    image: google/cloud-sdk:alpine
     container_name: cassandra_gcs_backup
     restart: unless-stopped
-    environment:
-      # Formato del archivo comprimido con la fecha y hora exacta de ejecución
-      - BACKUP_FILENAME=backup-cassandra-%Y-%m-%d-%H-%M-%S.tar.gz
-      - GCS_BUCKET=mathews-coffee-bucket
-      - GCS_PROJECT_ID=mathews-coffe
-      # Ruta interna del contenedor donde se lee la llave de Google Cloud
-      - GOOGLE_APPLICATION_CREDENTIALS=/keys/gcp-key.json
-      # AUTOMATIZACIÓN: Configurado exactamente cada 10 minutos
-      - BACKUP_CRON=*/10 * * * *
     volumes:
-      # Acceso de solo lectura al volumen de datos de tu Cassandra Seed
-      - cassandra_seed_data:/backup/cassandra-data:ro
-      # Reutilizamos la misma ruta local de credenciales que ya usas en MongoDB
+      - cassandra_seed_data:/var/lib/cassandra:ro
       - ./credentials/gcp-key.json:/keys/gcp-key.json:ro
+      - ./gcs-backup.sh:/usr/local/bin/gcs-backup.sh:ro
     networks:
       - mongo-net
+    environment:
+      - GCS_BUCKET=backups_cassandra
+      - GCP_PROJECT_ID=mathews-coffe
+    command: >
+      sh -c "
+        echo 'Configurando el planificador de tareas...'
+        
+        # Aseguramos que el script tenga permisos de ejecución internos
+        chmod +x /usr/local/bin/gcs-backup.sh
+
+        # Configuramos el CRON nativo de Alpine para ejecutarlo cada 5 min
+        echo '*/5 * * * * /usr/local/bin/gcs-backup.sh' > /etc/crontabs/root
+        
+        # Iniciamos el demonio de cron en primer plano
+        crond -f -l 2
+      "
     depends_on:
       cassandra-seed:
         condition: service_healthy
-
+ 
 networks:
   mongo-net:
     driver: bridge
-
+ 
 volumes:
   cassandra_seed_data:
   cassandra_node2_data:

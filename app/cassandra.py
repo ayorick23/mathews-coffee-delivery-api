@@ -1,8 +1,9 @@
 import asyncio
 import logging
 import os
+import base64
 
-from cassandra.cluster import Cluster, Session
+from cassandra.cluster import Cluster, Session, SimpleStatement
 from cassandra.io.asyncioreactor import AsyncioConnection
 from cassandra.policies import DCAwareRoundRobinPolicy
 from dotenv import load_dotenv
@@ -14,12 +15,13 @@ logger = logging.getLogger(__name__)
 
 CASSANDRA_HOST = os.getenv("CASSANDRA_HOST", "localhost")
 CASSANDRA_KEYSPACE = os.getenv("CASSANDRA_KEYSPACE", "mathews_tracking")
+CASSANDRA_REPLICATION_FACTOR = int(os.getenv("CASSANDRA_REPLICATION_FACTOR", "3"))
 
 # ── Schema ────────────────────────────────────────────────────────────────────
 
 _CREATE_KEYSPACE = f"""
 CREATE KEYSPACE IF NOT EXISTS {CASSANDRA_KEYSPACE}
-WITH replication = {{'class': 'SimpleStrategy', 'replication_factor': 1}}
+WITH replication = {{'class': 'SimpleStrategy', 'replication_factor': {CASSANDRA_REPLICATION_FACTOR}}}
 """
 
 _CREATE_GPS_BY_DRIVER = """
@@ -86,6 +88,24 @@ async def cassandra_execute(session: Session, statement: str, params=None):
     return await loop.run_in_executor(
         None, session.execute, statement, params or []
     )
+
+def cassandra_execute_with_pagination(session: Session, statement, params=None, paging_state=None):
+    results = session.execute(statement, params or [], paging_state=paging_state if paging_state else None)
+
+    rows = results.current_rows
+
+    next_paging_state = results.paging_state
+    next_page_token = None
+    
+    if next_paging_state:
+        next_page_token = base64.b64encode(next_paging_state).decode('utf-8')
+
+    data = [row for row in rows]
+    
+    return {
+        "data": data,
+        "next_page_token": next_page_token
+    }
 
 
 # ── FastAPI dependency ────────────────────────────────────────────────────────
